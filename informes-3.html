@@ -1,0 +1,478 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <meta name="theme-color" content="#5bb5bc" />
+  <title>Informes y Ventas — CRM Panificadora La Sin Gluten</title>
+  <link rel="apple-touch-icon" href="https://crm-lasingluten.github.io/crm-panificadora/Logo_02.png" />
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/react/18.2.0/umd/react.production.min.js"></script>
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/react-dom/18.2.0/umd/react-dom.production.min.js"></script>
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/babel-standalone/7.23.2/babel.min.js"></script>
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/xlsx/0.18.5/xlsx.full.min.js"></script>
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/Chart.js/4.4.1/chart.umd.min.js"></script>
+  <style>
+    *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+    body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; background: #f5f5f5; color: #1a1a1a; min-height: 100vh; }
+    #root { max-width: 1100px; margin: 0 auto; padding: 1.5rem; }
+    input, select, textarea, button { font-family: inherit; }
+    @keyframes spin { to { transform: rotate(360deg); } }
+  </style>
+</head>
+<body>
+<div id="root"></div>
+<div id="err-box" style="display:none;padding:2rem;background:#fef2f2;color:#b91c1c;font-family:monospace;font-size:13px;white-space:pre-wrap;border:1px solid #fca5a5;margin:1rem;border-radius:8px;"></div>
+<script>
+window.onerror = function(msg, src, line) {
+  var d = document.getElementById("err-box");
+  d.style.display = "block";
+  d.textContent = "Error linea " + line + ": " + msg + "\nArchivo: " + src;
+};
+</script>
+<script type="text/babel">
+const { useState, useEffect, useMemo, useCallback, useRef } = React;
+
+// ── CONFIG (mismos valores que crm-panificadora) ───────────────────────────────
+const SB_URL = "https://lbbpnnvwtanurtjqgcqv.supabase.co";
+const SB_KEY = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImxiYnBubnZ3dGFudXJ0anFnY3F2Iiwicm9sZSI6ImFub24iLCJpYXQiOjE3NzY3NjM2NDEsImV4cCI6MjA5MjMzOTY0MX0.a25lrgUlzDM4TSp4c6KOCQ3ERZnSk8-5r2y9DbhRPxg";
+const HDR = { "Content-Type": "application/json", "apikey": SB_KEY, "Authorization": "Bearer " + SB_KEY, "Prefer": "return=representation" };
+
+const LINEAS      = ["La Sin Gluten", "Bauer Lemans"];
+const LINEA_COLOR = { "La Sin Gluten": "#5bb5bc", "Bauer Lemans": "#c0392b" };
+const LINEA_LOGO  = { "La Sin Gluten": "https://crm-lasingluten.github.io/crm-panificadora/Logo_02.png", "Bauer Lemans": "https://crm-lasingluten.github.io/crm-panificadora/LOGO BAUER.png" };
+const ESTADOS_ACT = ["Pendiente","En curso","Completada"];
+const TCLI_C      = { Cliente:"#1d9e75", Potencial:"#ba7517", Inactivo:"#888" };
+const MESES       = ["Enero","Febrero","Marzo","Abril","Mayo","Junio","Julio","Agosto","Septiembre","Octubre","Noviembre","Diciembre"];
+const CY = new Date().getFullYear();
+const CM = new Date().getMonth() + 1;
+const ANIOS = [String(CY-2), String(CY-1), String(CY), String(CY+1), String(CY+2)];
+
+async function sbGet(t,p) {
+  p=p||"";
+  var r=await fetch(SB_URL+"/rest/v1/"+t+"?"+p,{headers:HDR});
+  if(!r.ok) throw new Error(await r.text());
+  return r.json();
+}
+async function sbPost(t,b) {
+  var r=await fetch(SB_URL+"/rest/v1/"+t,{method:"POST",headers:HDR,body:JSON.stringify(b)});
+  if(!r.ok) throw new Error(await r.text());
+  return r.json();
+}
+async function sbDelWhere(t,p) {
+  var r=await fetch(SB_URL+"/rest/v1/"+t+"?"+p,{method:"DELETE",headers:HDR});
+  if(!r.ok) throw new Error(await r.text());
+}
+
+function toCSV(rows,cols) {
+  var h=cols.map(function(c){return c.label;}).join(",");
+  var b=rows.map(function(r){return cols.map(function(c){return '"'+String(r[c.key]||"").replace(/"/g,'""')+'"';}).join(",");}).join("\n");
+  return h+"\n"+b;
+}
+function dlCSV(content,filename) {
+  var blob=new Blob(["\uFEFF"+content],{type:"text/csv;charset=utf-8;"});
+  var url=URL.createObjectURL(blob);
+  var a=document.createElement("a"); a.href=url; a.download=filename; a.click();
+  URL.revokeObjectURL(url);
+}
+
+// ── UI ────────────────────────────────────────────────────────────────────────
+function Badge(props) {
+  return <span style={{fontSize:11,padding:"2px 8px",borderRadius:10,background:props.color+"22",color:props.color,fontWeight:500,whiteSpace:"nowrap"}}>{props.label}</span>;
+}
+function Inp(props) {
+  return <input type={props.type||"text"} value={props.value} onChange={function(e){props.onChange(e.target.value);}} placeholder={props.placeholder}
+    style={{padding:"7px 10px",border:"1px solid #ddd",borderRadius:8,fontSize:13,background:"#fff",color:"#1a1a1a",width:"100%"}} />;
+}
+function Sel(props) {
+  return <select value={props.value} onChange={function(e){props.onChange(e.target.value);}}
+    style={{padding:"7px 10px",border:"1px solid #ddd",borderRadius:8,fontSize:13,background:"#fff",color:"#1a1a1a",width:"100%"}}>
+    {props.placeholder&&<option value="">{props.placeholder}</option>}
+    {(props.options||[]).map(function(o){return <option key={o} value={o}>{o}</option>;})}
+  </select>;
+}
+function Btn(props) {
+  var BG={primary:"#185fa5",success:"#0f6e56",danger:"#a32d2d",warning:"#ba7517",default:"#fff"};
+  var CL={primary:"#fff",success:"#fff",danger:"#fff",warning:"#fff",default:"#333"};
+  var v=props.variant||"default";
+  return <button onClick={props.onClick} disabled={props.disabled}
+    style={Object.assign({cursor:props.disabled?"not-allowed":"pointer",opacity:props.disabled?0.5:1,borderRadius:8,fontSize:13,padding:"7px 14px",fontWeight:500,border:"1px solid #ddd",background:BG[v]||BG.default,color:CL[v]||CL.default},props.style||{})}>
+    {props.children}
+  </button>;
+}
+function Spinner(){return <div style={{display:"flex",justifyContent:"center",alignItems:"center",padding:"4rem",color:"#888",fontSize:13,gap:10}}><div style={{width:20,height:20,border:"2px solid #ddd",borderTopColor:"#185fa5",borderRadius:"50%",animation:"spin 0.8s linear infinite"}} />Conectando…</div>;}
+function ErrMsg(props){return <div style={{padding:"1rem",background:"#fef2f2",border:"1px solid #fca5a5",borderRadius:8,color:"#b91c1c",fontSize:13,display:"flex",justifyContent:"space-between",alignItems:"center"}}><span>⚠️ {props.msg}</span>{props.onRetry&&<Btn onClick={props.onRetry}>Reintentar</Btn>}</div>;}
+function Card(props){return <div style={Object.assign({background:"#fff",border:"1px solid #e8e8e8",borderRadius:12,padding:"1.25rem",marginBottom:20},props.style||{})}>{props.children}</div>;}
+
+// ── IMPORTAR VENTAS ─────────────────────────────────────────────────────────────
+function ImportVentas(props) {
+  var clients=props.clients,onImport=props.onImport,onClose=props.onClose;
+  var [preview,setPreview]=useState(null);
+  var [importing,setImporting]=useState(false);
+  var [result,setResult]=useState(null);
+  var [delMes,setDelMes]=useState(String(CM));
+  var [delAnio,setDelAnio]=useState(String(CY));
+  var [deleting,setDeleting]=useState(false);
+  var fileRef=useRef();
+  function borrarMes(){
+    if(!confirm("¿Borrar TODAS las ventas de "+MESES[parseInt(delMes)-1]+" "+delAnio+"?"))return;
+    setDeleting(true);
+    sbDelWhere("ventas","mes=eq."+delMes+"&anio=eq."+delAnio).then(function(){alert("✅ Ventas eliminadas.");onImport();setDeleting(false);}).catch(function(e){alert("Error: "+e.message);setDeleting(false);});
+  }
+  function handleFile(e){
+    var file=e.target.files[0];if(!file)return;
+    var reader=new FileReader();
+    reader.onload=function(evt){
+      try{
+        var wb=XLSX.read(evt.target.result,{type:"binary"});
+        var ws=wb.Sheets[wb.SheetNames[0]];
+        var rows=XLSX.utils.sheet_to_json(ws,{defval:""});
+        var mapped=rows.map(function(r){
+          var keys=Object.keys(r);
+          function get(idx,names){for(var i=0;i<names.length;i++){var n=names[i];var k=keys.find(function(k){return k.toLowerCase().replace(/\s+/g,"").indexOf(n.toLowerCase().replace(/\s+/g,""))>=0;});if(k!==undefined)return r[k];}return r[keys[idx]];}
+          var codCliente=String(get(0,["codigo cliente","código cliente"])||"").trim();
+          var cliente=clients.find(function(c){return c.codigo===codCliente;});
+          return {codigo_cliente:codCliente,cliente_id:cliente?cliente.id:null,cliente_nombre:cliente?cliente.nombre:codCliente,codigo_producto:String(get(1,["codigo producto","código producto"])||"").trim(),denominacion:String(get(2,["denominacion","denominación","producto"])||"").trim(),unidades:parseFloat(get(3,["unidades","cantidad"])||0),precio_unidad:parseFloat(get(4,["precio","precio unidad"])||0),venta_neta:parseFloat(get(5,["venta neta","venta_neta","importe","total"])||0),mes:parseInt(get(6,["mes","month"])||CM),anio:parseInt(get(7,["año","anio","year"])||CY),gestor:cliente?cliente.gestor:"",linea_negocio:cliente?cliente.linea_negocio:"La Sin Gluten"};
+        }).filter(function(r){return r.codigo_cliente||r.denominacion;});
+        setPreview(mapped);setResult(null);
+      }catch(err){alert("Error: "+err.message);}
+    };
+    reader.readAsBinaryString(file);
+  }
+  function handleImport(){
+    if(!preview||!preview.length)return;
+    setImporting(true);
+    var ok=0,err=0,idx=0;
+    function next(){
+      if(idx>=preview.length){setImporting(false);setResult({ok:ok,err:err});if(ok>0)onImport();return;}
+      var row=preview[idx++];
+      sbPost("ventas",{cliente_id:row.cliente_id,codigo_cliente:row.codigo_cliente,codigo_producto:row.codigo_producto,denominacion:row.denominacion,unidades:row.unidades,precio_unidad:row.precio_unidad,venta_neta:row.venta_neta,mes:row.mes,anio:row.anio,gestor:row.gestor,linea_negocio:row.linea_negocio}).then(function(){ok++;next();}).catch(function(){err++;next();});
+    }
+    next();
+  }
+  function downloadTemplate(){
+    var ws=XLSX.utils.aoa_to_sheet([["Código Cliente","Código Producto","Denominación Producto","Unidades","Precio por Unidad","Venta Neta","Mes","Año"],["CL000001","PROD001","Pan Sin Gluten 500g","100","3.50","350","4","2026"]]);
+    var wb=XLSX.utils.book_new();XLSX.utils.book_append_sheet(wb,ws,"Ventas");XLSX.writeFile(wb,"plantilla_ventas.xlsx");
+  }
+  return (
+    <Card>
+      <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:16}}>
+        <span style={{fontSize:15,fontWeight:600}}>📊 Importar / Gestionar ventas</span>
+        <button onClick={onClose} style={{background:"none",border:"none",fontSize:22,cursor:"pointer",color:"#888"}}>×</button>
+      </div>
+      <div style={{background:"#fef2f2",border:"1px solid #fca5a5",borderRadius:10,padding:"1rem",marginBottom:16}}>
+        <div style={{fontSize:13,fontWeight:600,color:"#b91c1c",marginBottom:10}}>🗑️ Borrar ventas de un mes/año</div>
+        <div style={{display:"flex",gap:8,alignItems:"center",flexWrap:"wrap"}}>
+          <div style={{flex:1,minWidth:120}}><Sel value={delMes} onChange={setDelMes} options={MESES.map(function(_,i){return String(i+1);})} /></div>
+          <div style={{flex:1,minWidth:100}}><Sel value={delAnio} onChange={setDelAnio} options={ANIOS} /></div>
+          <Btn variant="danger" onClick={borrarMes} disabled={deleting}>{deleting?"Borrando…":"Borrar mes"}</Btn>
+        </div>
+      </div>
+      <div style={{display:"flex",gap:8,marginBottom:16,flexWrap:"wrap"}}>
+        <Btn variant="success" onClick={downloadTemplate}>⬇ Plantilla</Btn>
+        <Btn variant="primary" onClick={function(){fileRef.current.value="";fileRef.current.click();}}>📂 Seleccionar archivo</Btn>
+        <input ref={fileRef} type="file" accept=".xlsx,.xls,.csv" onChange={handleFile} style={{display:"none"}} />
+      </div>
+      {preview&&<div>
+        <div style={{fontSize:13,fontWeight:600,marginBottom:8}}>Vista previa — {preview.length} líneas</div>
+        <div style={{overflowX:"auto",maxHeight:200,overflowY:"auto",marginBottom:12,border:"1px solid #eee",borderRadius:8}}>
+          <table style={{width:"100%",borderCollapse:"collapse",fontSize:12}}>
+            <thead style={{background:"#f9f9f9",position:"sticky",top:0}}>
+              <tr>{["Cód.Cliente","Cliente","Producto","Uds","Venta Neta","Mes/Año"].map(function(h){return <th key={h} style={{padding:"6px 8px",textAlign:"left",fontWeight:600,color:"#555",borderBottom:"1px solid #eee"}}>{h}</th>;})}</tr>
+            </thead>
+            <tbody>{preview.map(function(r,i){
+              return <tr key={i} style={{borderBottom:"1px solid #f5f5f5"}}>
+                <td style={{padding:"5px 8px",fontFamily:"monospace",fontSize:11}}>{r.codigo_cliente}</td>
+                <td style={{padding:"5px 8px",fontWeight:500}}>{r.cliente_nombre}</td>
+                <td style={{padding:"5px 8px"}}>{r.denominacion}</td>
+                <td style={{padding:"5px 8px",textAlign:"right"}}>{r.unidades}</td>
+                <td style={{padding:"5px 8px",textAlign:"right",fontWeight:600,color:"#1d9e75"}}>{(r.venta_neta||0).toFixed(2)}</td>
+                <td style={{padding:"5px 8px",color:"#888"}}>{(MESES[(r.mes||1)-1]||"").slice(0,3)} {r.anio}</td>
+              </tr>;
+            })}</tbody>
+          </table>
+        </div>
+        {result
+          ?<div style={{padding:"10px 14px",background:"#f0fdf4",border:"1px solid #86efac",borderRadius:8,fontSize:13}}>✅ <strong>{result.ok}</strong> importadas · <strong>{result.err}</strong> errores</div>
+          :<Btn variant="primary" onClick={handleImport} disabled={importing} style={{width:"100%"}}>{importing?"Importando…":"Importar "+preview.length+" líneas"}</Btn>
+        }
+      </div>}
+    </Card>
+  );
+}
+
+// ── GRÁFICO ───────────────────────────────────────────────────────────────────
+function VentasChart(props) {
+  var data=props.data||[];
+  var canvasRef=useRef(),chartRef=useRef();
+  useEffect(function(){
+    if(!data.length)return;
+    if(chartRef.current)chartRef.current.destroy();
+    var labels=[];data.forEach(function(d){if(labels.indexOf(d.label)<0)labels.push(d.label);});
+    var totals=labels.map(function(l){return data.filter(function(d){return d.label===l;}).reduce(function(s,d){return s+(d.venta_neta||0);},0);});
+    chartRef.current=new Chart(canvasRef.current,{type:"bar",data:{labels:labels,datasets:[{label:"Venta Neta (€)",data:totals,backgroundColor:"#8ecfd488",borderColor:"#5bb5bc",borderWidth:2,borderRadius:6}]},options:{responsive:true,maintainAspectRatio:false,plugins:{legend:{display:false},tooltip:{callbacks:{label:function(ctx){return "€ "+ctx.raw.toLocaleString("es-ES",{minimumFractionDigits:2});}}}},scales:{y:{ticks:{callback:function(v){return "€"+v.toLocaleString("es-ES");}}}}}});
+    return function(){if(chartRef.current)chartRef.current.destroy();};
+  },[data]);
+  if(!data.length)return <div style={{textAlign:"center",color:"#aaa",padding:"2rem",fontSize:13}}>Sin datos.</div>;
+  return <div style={{height:280,position:"relative"}}><canvas ref={canvasRef} /></div>;
+}
+
+// ── LOGIN (idéntico al de crm-panificadora, misma tabla "usuarios") ────────────
+function Login(props) {
+  var [gestor,setGestor]=useState("");
+  var [pass,setPass]=useState("");
+  var [error,setError]=useState("");
+  var [loading,setLoading]=useState(false);
+  var [usuarios,setUsuarios]=useState([]);
+
+  useEffect(function(){
+    sbGet("usuarios","select=nombre&order=nombre.asc").then(function(r){setUsuarios(r.map(function(x){return x.nombre;}));}).catch(function(){});
+  },[]);
+
+  function handleLogin(){
+    if(!gestor){setError("Selecciona tu nombre");return;}
+    if(!pass){setError("Ingresa tu contrasena");return;}
+    setLoading(true);
+    sbGet("usuarios","nombre=eq."+encodeURIComponent(gestor)+"&select=nombre,password,admin,linea_negocio").then(function(rows){
+      if(!rows.length||rows[0].password!==pass){setError("Contrasena incorrecta");setLoading(false);return;}
+      var lineas=(rows[0].linea_negocio||"La Sin Gluten").split("|");
+      var u={nombre:rows[0].nombre,admin:rows[0].admin,lineas:lineas,lineaActiva:lineas[0]};
+      localStorage.setItem("crm_session",JSON.stringify(u));
+      props.onLogin(u);
+    }).catch(function(){setError("Error de conexion");setLoading(false);});
+  }
+
+  return (
+    <div style={{minHeight:"100vh",display:"flex",alignItems:"center",justifyContent:"center",background:"linear-gradient(135deg,#f0f4ff 0%,#e8f5e9 100%)"}}>
+      <div style={{background:"#fff",borderRadius:16,padding:"2.5rem 2rem",width:"100%",maxWidth:380,boxShadow:"0 20px 60px rgba(0,0,0,0.1)"}}>
+        <div style={{textAlign:"center",marginBottom:"2rem"}}>
+          <div style={{width:90,height:90,borderRadius:"50%",overflow:"hidden",margin:"0 auto 1rem",border:"3px solid #86efac"}}>
+            <img src="https://crm-lasingluten.github.io/crm-panificadora/Logo_02.png" alt="Logo" style={{width:"100%",height:"100%",objectFit:"cover"}} />
+          </div>
+          <h1 style={{fontSize:18,fontWeight:600}}>Informes</h1>
+          <div style={{fontSize:12,color:"#888",marginTop:4}}>CRM Panificadora La Sin Gluten</div>
+        </div>
+        <div style={{marginBottom:12}}>
+          <div style={{fontSize:12,color:"#666",marginBottom:3}}>Gestor</div>
+          <Sel value={gestor} onChange={setGestor} options={usuarios} placeholder="Selecciona tu nombre" />
+        </div>
+        <div style={{marginBottom:16}}>
+          <div style={{fontSize:12,color:"#666",marginBottom:3}}>Contraseña</div>
+          <Inp type="password" value={pass} onChange={setPass} placeholder="••••••••" />
+        </div>
+        {error&&<div style={{fontSize:12,color:"#e24b4a",marginBottom:12}}>{error}</div>}
+        <Btn variant="primary" style={{width:"100%",padding:"10px"}} disabled={loading} onClick={handleLogin}>{loading?"Ingresando…":"Ingresar"}</Btn>
+      </div>
+    </div>
+  );
+}
+
+// ── INFORMES ────────────────────────────────────────────────────────────────────
+function Informes(props){
+  var currentUser=props.currentUser, lineaActiva=props.lineaActiva, linColor=props.linColor, onLogout=props.onLogout, onCambiarLinea=props.onCambiarLinea;
+
+  var [config,setConfig]=useState({canales:[],grupos:[],gestores:[]});
+  var [clients,setClients]=useState([]);
+  var [activities,setActivities]=useState([]);
+  var [ventas,setVentas]=useState([]);
+  var [loading,setLoading]=useState(true);
+  var [error,setError]=useState(null);
+  var [subTab,setSubTab]=useState("Informes");
+  var [rptFilter,setRptFilter]=useState({canal:"",grupo:"",gestor:"",fechaDesde:"",fechaHasta:"",estado:""});
+  var [ventasFiltro,setVentasFiltro]=useState({canal:"",gestor:"",grupo:"",mes:"",anio:String(CY),groupBy:"mes"});
+  var [showImportVen,setShowImportVen]=useState(false);
+
+  function clientName(id){var c=clients.find(function(x){return x.id===id;});return c?c.nombre:"—";}
+
+  var loadAll=useCallback(function(){
+    setLoading(true);setError(null);
+    Promise.all([
+      sbGet("config","select=clave,valor"),
+      sbGet("clientes","select=*&order=nombre.asc"),
+      sbGet("actividades","select=*&order=fecha.desc"),
+      sbGet("ventas","select=*&order=anio.desc,mes.desc"),
+    ]).then(function(results){
+      var cfgRows=results[0],cls=results[1],acts=results[2],vts=results[3];
+      var cfg={canales:[],grupos:[],gestores:[]};
+      cfgRows.forEach(function(r){if(r.clave==="canales")cfg.canales=r.valor;if(r.clave==="grupos")cfg.grupos=r.valor;if(r.clave==="gestores")cfg.gestores=r.valor;});
+      setConfig(cfg);setClients(cls);setActivities(acts);setVentas(vts);setLoading(false);
+    }).catch(function(e){setError("No se pudo conectar. "+e.message);setLoading(false);});
+  },[]);
+
+  useEffect(function(){loadAll();},[loadAll]);
+  useEffect(function(){
+    if(config.gestores.length&&config.gestores.indexOf(currentUser.nombre)>=0){
+      setVentasFiltro(function(f){return Object.assign({},f,{gestor:currentUser.nombre});});
+    }
+  },[config.gestores.length]);
+
+  var clientsFiltLinea    = useMemo(function(){return clients.filter(function(c){return c.linea_negocio===lineaActiva;});},[clients,lineaActiva]);
+  var activitiesFiltLinea = useMemo(function(){return activities.filter(function(a){return a.linea_negocio===lineaActiva;});},[activities,lineaActiva]);
+  var ventasFiltLinea     = useMemo(function(){return ventas.filter(function(v){return v.linea_negocio===lineaActiva;});},[ventas,lineaActiva]);
+
+  var fc=clientsFiltLinea.filter(function(c){return(!rptFilter.canal||c.canal===rptFilter.canal)&&(!rptFilter.grupo||c.grupo===rptFilter.grupo)&&(!rptFilter.gestor||c.gestor===rptFilter.gestor);});
+  var rows=fc.map(function(c){
+    var cActs=activitiesFiltLinea.filter(function(a){return a.cliente_id===c.id&&(!rptFilter.fechaDesde||a.fecha>=rptFilter.fechaDesde)&&(!rptFilter.fechaHasta||a.fecha<=rptFilter.fechaHasta)&&(!rptFilter.estado||a.estado===rptFilter.estado);});
+    var ultima=cActs.length?cActs[0].fecha:"—";
+    var vta=ventasFiltLinea.filter(function(v){return v.cliente_id===c.id;}).reduce(function(s,v){return s+(v.venta_neta||0);},0);
+    return Object.assign({},c,{numActs:cActs.length,ultima:ultima,actsPend:activitiesFiltLinea.filter(function(a){return a.cliente_id===c.id&&a.estado!=="Completada";}).length,ventaTotal:vta});
+  });
+
+  var ventasFilt=ventasFiltLinea.filter(function(v){
+    var cliente=clients.find(function(c){return c.id===v.cliente_id;});
+    if(ventasFiltro.canal&&(!cliente||cliente.canal!==ventasFiltro.canal))return false;
+    if(ventasFiltro.grupo&&(!cliente||cliente.grupo!==ventasFiltro.grupo))return false;
+    if(ventasFiltro.gestor&&v.gestor!==ventasFiltro.gestor)return false;
+    if(ventasFiltro.mes&&String(v.mes)!==ventasFiltro.mes)return false;
+    if(ventasFiltro.anio&&String(v.anio)!==ventasFiltro.anio)return false;
+    return true;
+  });
+  var ventasChart=(function(){
+    if(ventasFiltro.groupBy==="gestor")return ventasFilt.map(function(v){return Object.assign({},v,{label:v.gestor||"Sin gestor"});});
+    if(ventasFiltro.groupBy==="canal"){return ventasFilt.map(function(v){var c=clients.find(function(x){return x.id===v.cliente_id;});return Object.assign({},v,{label:c?c.canal:"Sin canal"});});}
+    if(ventasFiltro.groupBy==="cliente")return ventasFilt.map(function(v){return Object.assign({},v,{label:clientName(v.cliente_id)});});
+    return ventasFilt.map(function(v){return Object.assign({},v,{label:(MESES[(v.mes||1)-1]||"").slice(0,3)+" "+v.anio});});
+  })();
+  var totalVenta=ventasFilt.reduce(function(s,v){return s+(v.venta_neta||0);},0);
+  var totalUds=ventasFilt.reduce(function(s,v){return s+(v.unidades||0);},0);
+
+  return <div>
+    <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:20,flexWrap:"wrap",gap:10}}>
+      <div style={{display:"flex",alignItems:"center",gap:10}}>
+        <img src={LINEA_LOGO[lineaActiva]} alt="" style={{width:36,height:36,borderRadius:"50%",objectFit:"cover"}} />
+        <div>
+          <div style={{fontSize:16,fontWeight:600}}>Informes y Ventas</div>
+          <div style={{fontSize:11,color:"#888"}}>{lineaActiva} · {currentUser.nombre}</div>
+        </div>
+      </div>
+      <div style={{display:"flex",gap:8,alignItems:"center"}}>
+        {currentUser.lineas&&currentUser.lineas.length>1&&<Sel value={lineaActiva} onChange={onCambiarLinea} options={currentUser.lineas} />}
+        <a href="https://crm-lasingluten.github.io/" style={{fontSize:12,color:linColor,textDecoration:"none",fontWeight:500}}>🏠 Módulo de Gestión</a>
+        <a href="./index.html" style={{fontSize:12,color:linColor,textDecoration:"none",fontWeight:500}}>← Volver al CRM</a>
+        <Btn onClick={onLogout}>Salir</Btn>
+      </div>
+    </div>
+
+    <div style={{display:"flex",gap:4,background:"#eef1f5",borderRadius:20,padding:3,marginBottom:20,width:"fit-content"}}>
+      {["Informes","Ventas"].map(function(t){
+        return <button key={t} onClick={function(){setSubTab(t);}} style={{padding:"7px 18px",borderRadius:16,border:"none",cursor:"pointer",fontSize:13,fontWeight:subTab===t?600:400,background:subTab===t?"#fff":"transparent",color:subTab===t?linColor:"#666",boxShadow:subTab===t?"0 1px 3px rgba(0,0,0,0.1)":"none"}}>{t}</button>;
+      })}
+    </div>
+
+    {loading?<Spinner/>:error?<ErrMsg msg={error} onRetry={loadAll}/>:<div>
+
+    {subTab==="Informes"&&<div>
+      <div style={{display:"flex",gap:8,flexWrap:"wrap",marginBottom:16,alignItems:"flex-end"}}>
+        {[["Canal","canal",config.canales],["Grupo","grupo",config.grupos],["Gestor","gestor",config.gestores],["Estado activ.","estado",ESTADOS_ACT]].map(function(item){
+          var l=item[0],k=item[1],opts=item[2];
+          return <div key={k} style={{flex:"1 1 120px"}}><div style={{fontSize:11,color:"#888",marginBottom:3}}>{l}</div><Sel value={rptFilter[k]} onChange={function(v){setRptFilter(function(f){return Object.assign({},f,{[k]:v});});}} options={opts} placeholder="Todos" /></div>;
+        })}
+        {[["fechaDesde","Activ. desde"],["fechaHasta","Activ. hasta"]].map(function(item){
+          var k=item[0],l=item[1];
+          return <div key={k} style={{flex:"1 1 120px"}}><div style={{fontSize:11,color:"#888",marginBottom:3}}>{l}</div><Inp type="date" value={rptFilter[k]} onChange={function(v){setRptFilter(function(f){return Object.assign({},f,{[k]:v});});}} /></div>;
+        })}
+        <Btn onClick={function(){setRptFilter({canal:"",grupo:"",gestor:"",fechaDesde:"",fechaHasta:"",estado:""});}}>Limpiar</Btn>
+        <Btn variant="success" onClick={function(){dlCSV(toCSV(rows,[{key:"codigo",label:"Código"},{key:"nombre",label:"Empresa"},{key:"tipo_cliente",label:"Tipo"},{key:"canal",label:"Canal"},{key:"grupo",label:"Grupo"},{key:"gestor",label:"Gestor"},{key:"numActs",label:"Actividades"},{key:"actsPend",label:"Pendientes"},{key:"ultima",label:"Última activ."},{key:"ventaTotal",label:"Venta Total €"}]),"informe.csv");}}>⬇ CSV</Btn>
+      </div>
+      <div style={{display:"grid",gridTemplateColumns:"repeat(4,1fr)",gap:10,marginBottom:20}}>
+        {[["Clientes",rows.length,"#185fa5"],["Actividades",rows.reduce(function(s,r){return s+r.numActs;},0),"#1d9e75"],["Pendientes",rows.reduce(function(s,r){return s+r.actsPend;},0),"#ba7517"],["Venta Total","€"+rows.reduce(function(s,r){return s+r.ventaTotal;},0).toLocaleString("es-ES",{minimumFractionDigits:2}),"#7f77dd"]].map(function(item){
+          var l=item[0],v=item[1],c=item[2];
+          return <div key={l} style={{background:"#fff",border:"1px solid #e8e8e8",borderRadius:8,padding:"0.75rem 1rem"}}><div style={{fontSize:11,color:"#888",marginBottom:2}}>{l}</div><div style={{fontSize:typeof v==="string"&&v.indexOf("€")>=0?15:22,fontWeight:600,color:c}}>{v}</div></div>;
+        })}
+      </div>
+      <div style={{overflowX:"auto"}}>
+        <table style={{width:"100%",borderCollapse:"collapse",fontSize:13,background:"#fff",borderRadius:10}}>
+          <thead style={{background:"#f9f9f9"}}><tr>{["Código","Empresa","Tipo","Canal","Gestor","Actividades","Pendientes","Última activ.","Venta Total"].map(function(h){return <th key={h} style={{textAlign:"left",padding:"8px 10px",fontWeight:600,color:"#555",fontSize:12,borderBottom:"1px solid #eee",whiteSpace:"nowrap"}}>{h}</th>;})}</tr></thead>
+          <tbody>{rows.map(function(r){
+            return <tr key={r.id} style={{borderBottom:"1px solid #f0f0f0"}}>
+              <td style={{padding:"9px 10px",fontSize:11,fontFamily:"monospace",color:linColor,fontWeight:600}}>{r.codigo||"—"}</td>
+              <td style={{padding:"9px 10px",fontWeight:500}}>{r.nombre}</td>
+              <td style={{padding:"9px 10px"}}><Badge color={TCLI_C[r.tipo_cliente]||"#888"} label={r.tipo_cliente||"Potencial"} /></td>
+              <td style={{padding:"9px 10px"}}><Badge color="#7f77dd" label={r.canal||"—"} /></td>
+              <td style={{padding:"9px 10px",fontSize:12}}>{r.gestor}</td>
+              <td style={{padding:"9px 10px",textAlign:"center",color:r.numActs>0?"#1d9e75":"#aaa",fontWeight:600}}>{r.numActs}</td>
+              <td style={{padding:"9px 10px",textAlign:"center",color:r.actsPend>0?"#ba7517":"#aaa",fontWeight:600}}>{r.actsPend}</td>
+              <td style={{padding:"9px 10px",fontSize:12}}>{r.ultima}</td>
+              <td style={{padding:"9px 10px",textAlign:"right",fontWeight:600}}>€{(r.ventaTotal||0).toLocaleString("es-ES",{minimumFractionDigits:2})}</td>
+            </tr>;
+          })}</tbody>
+        </table>
+        {rows.length===0&&<div style={{textAlign:"center",color:"#aaa",marginTop:24,fontSize:13}}>Sin datos.</div>}
+      </div>
+    </div>}
+
+    {subTab==="Ventas"&&<div>
+      {showImportVen&&<ImportVentas clients={clients} onImport={function(){loadAll().then(function(){setShowImportVen(false);});}} onClose={function(){setShowImportVen(false);}} />}
+      {!showImportVen&&<div>
+        <div style={{display:"flex",gap:8,marginBottom:16,flexWrap:"wrap",alignItems:"flex-end"}}>
+          {[["Canal","canal",config.canales],["Gestor","gestor",config.gestores],["Grupo","grupo",config.grupos]].map(function(item){
+            var l=item[0],k=item[1],opts=item[2];
+            return <div key={k} style={{flex:"1 1 120px"}}><div style={{fontSize:11,color:"#888",marginBottom:3}}>{l}</div><Sel value={ventasFiltro[k]} onChange={function(v){setVentasFiltro(function(f){return Object.assign({},f,{[k]:v});});}} options={opts} placeholder="Todos" /></div>;
+          })}
+          <div style={{flex:"1 1 100px"}}><div style={{fontSize:11,color:"#888",marginBottom:3}}>Mes</div><Sel value={ventasFiltro.mes} onChange={function(v){setVentasFiltro(function(f){return Object.assign({},f,{mes:v});});}} options={MESES.map(function(_,i){return String(i+1);})} placeholder="Todos" /></div>
+          <div style={{flex:"1 1 100px"}}><div style={{fontSize:11,color:"#888",marginBottom:3}}>Año</div><Sel value={ventasFiltro.anio} onChange={function(v){setVentasFiltro(function(f){return Object.assign({},f,{anio:v});});}} options={[""].concat(ANIOS)} placeholder="Todos" /></div>
+          <div style={{flex:"1 1 120px"}}><div style={{fontSize:11,color:"#888",marginBottom:3}}>Agrupar gráfico</div><Sel value={ventasFiltro.groupBy} onChange={function(v){setVentasFiltro(function(f){return Object.assign({},f,{groupBy:v});});}} options={["mes","gestor","canal","cliente"]} /></div>
+          <Btn onClick={function(){setVentasFiltro({canal:"",gestor:currentUser.nombre,grupo:"",mes:"",anio:String(CY),groupBy:"mes"});}}>Limpiar</Btn>
+          <Btn variant="warning" onClick={function(){setShowImportVen(true);}}>📥 Importar/Borrar</Btn>
+          <Btn variant="success" onClick={function(){dlCSV(toCSV(ventasFilt.map(function(v){return Object.assign({},v,{cliente:clientName(v.cliente_id),mes_nombre:MESES[(v.mes||1)-1]});}),[ {key:"cliente",label:"Cliente"},{key:"codigo_cliente",label:"Cód.Cliente"},{key:"codigo_producto",label:"Cód.Producto"},{key:"denominacion",label:"Producto"},{key:"unidades",label:"Unidades"},{key:"precio_unidad",label:"Precio Unidad"},{key:"venta_neta",label:"Venta Neta"},{key:"mes_nombre",label:"Mes"},{key:"anio",label:"Año"},{key:"gestor",label:"Gestor"} ]),"ventas.csv");}}>⬇ CSV</Btn>
+        </div>
+        <div style={{display:"grid",gridTemplateColumns:"repeat(3,1fr)",gap:12,marginBottom:20}}>
+          {[["Venta neta total","€"+totalVenta.toLocaleString("es-ES",{minimumFractionDigits:2}),"#185fa5"],["Total unidades",totalUds.toLocaleString("es-ES"),"#1d9e75"],["Líneas",ventasFilt.length,"#7f77dd"]].map(function(item){
+            var l=item[0],v=item[1],c=item[2];
+            return <div key={l} style={{background:"#fff",border:"1px solid #e8e8e8",borderRadius:10,padding:"1rem",textAlign:"center"}}><div style={{fontSize:12,color:"#888",marginBottom:4}}>{l}</div><div style={{fontSize:typeof v==="string"&&v.indexOf("€")>=0?18:22,fontWeight:600,color:c}}>{v}</div></div>;
+          })}
+        </div>
+        <Card><VentasChart data={ventasChart} /></Card>
+        <div style={{overflowX:"auto"}}>
+          <table style={{width:"100%",borderCollapse:"collapse",fontSize:13,background:"#fff",borderRadius:10}}>
+            <thead style={{background:"#f9f9f9"}}><tr>{["Cliente","Cód.Cliente","Producto","Uds","P.Unit","Venta Neta","Mes","Año","Gestor"].map(function(h){return <th key={h} style={{textAlign:"left",padding:"8px 10px",fontWeight:600,color:"#555",fontSize:12,borderBottom:"1px solid #eee",whiteSpace:"nowrap"}}>{h}</th>;})}</tr></thead>
+            <tbody>{ventasFilt.map(function(v){
+              return <tr key={v.id} style={{borderBottom:"1px solid #f0f0f0"}}>
+                <td style={{padding:"8px 10px",fontWeight:500}}>{clientName(v.cliente_id)}</td>
+                <td style={{padding:"8px 10px",fontSize:11,fontFamily:"monospace",color:linColor}}>{v.codigo_cliente}</td>
+                <td style={{padding:"8px 10px",fontSize:12}}>{v.denominacion}</td>
+                <td style={{padding:"8px 10px",textAlign:"right",fontSize:12}}>{v.unidades}</td>
+                <td style={{padding:"8px 10px",textAlign:"right",fontSize:12}}>€{parseFloat(v.precio_unidad||0).toFixed(2)}</td>
+                <td style={{padding:"8px 10px",textAlign:"right",fontWeight:600,color:"#1d9e75"}}>€{parseFloat(v.venta_neta||0).toLocaleString("es-ES",{minimumFractionDigits:2})}</td>
+                <td style={{padding:"8px 10px",fontSize:12}}>{MESES[(v.mes||1)-1]}</td>
+                <td style={{padding:"8px 10px",fontSize:12}}>{v.anio}</td>
+                <td style={{padding:"8px 10px",fontSize:12}}>{v.gestor}</td>
+              </tr>;
+            })}</tbody>
+          </table>
+          {ventasFilt.length===0&&<div style={{textAlign:"center",color:"#aaa",marginTop:24,fontSize:13}}>Sin datos.</div>}
+        </div>
+      </div>}
+    </div>}
+
+    </div>}
+  </div>;
+}
+
+// ── MAIN ──────────────────────────────────────────────────────────────────────
+function App() {
+  var sesion=null;
+  try{var s=localStorage.getItem("crm_session");if(s)sesion=JSON.parse(s);}catch(e){}
+
+  var [currentUser,setCurrentUser]=useState(sesion);
+  var [lineaActiva,setLineaActiva]=useState(sesion?sesion.lineaActiva:"La Sin Gluten");
+
+  function handleLogin(u){setCurrentUser(u);setLineaActiva(u.lineaActiva);}
+  function handleLogout(){localStorage.removeItem("crm_session");setCurrentUser(null);}
+  function handleCambiarLinea(l){
+    setLineaActiva(l);
+    var u=Object.assign({},currentUser,{lineaActiva:l});
+    localStorage.setItem("crm_session",JSON.stringify(u));
+    setCurrentUser(u);
+  }
+
+  if(!currentUser) return <Login onLogin={handleLogin} />;
+
+  var linColor=LINEA_COLOR[lineaActiva]||"#5bb5bc";
+
+  return <Informes currentUser={currentUser} lineaActiva={lineaActiva} linColor={linColor} onLogout={handleLogout} onCambiarLinea={handleCambiarLinea} />;
+}
+
+ReactDOM.createRoot(document.getElementById("root")).render(<App />);
+</script>
+</body>
+</html>
